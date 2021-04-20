@@ -13,6 +13,9 @@ import sys
 MOUSELEFT = 1
 MOUSERIGHT = 3
 
+PROCESSES = 11
+GROUPINGS = 20
+
 def calculate_depth(c: complex, max_depth: int) -> int:
     z = complex(0,0)
     for i in range(0,max_depth):
@@ -46,10 +49,13 @@ screen.fill(background_colour)
 
 def draw_pixels(pixel_queue, depth_queue):
     while True:
-        (x,y) = pixel_queue.get()
-        draw_pixel(x,y,depth_queue)
+        pixel_group = pixel_queue.get()
+        depth_group = []
+        for (x,y,width,height,x_min,x_max,y_min,y_max,max_depth) in pixel_group:
+            depth_group.append(draw_pixel(x,y,width,height,x_min,x_max,y_min,y_max,max_depth))
+        depth_queue.put(depth_group)
 
-def draw_pixel(x,y,depth_queue):
+def draw_pixel(x,y,width,height,x_min,x_max,y_min,y_max,max_depth):
 
     x_val = float(x)/(width)*(x_max-x_min)+x_min
     y_val = float(y)/(height)*(y_max-y_min)+y_min
@@ -60,7 +66,7 @@ def draw_pixel(x,y,depth_queue):
     hsv = math.log((float(depth)/max_depth)*9+1)*5/6
     (r,g,b) = colorsys.hsv_to_rgb(hsv, 1.0, 1.0)
 
-    depth_queue.put(((x,y),(r,g,b)))
+    return ((x,y),(r,g,b))
 
 running = True
 frame_start_time = datetime.now()
@@ -80,30 +86,49 @@ def clear_queue(q):
 
 #Set up drawing processes
 processes = []
-for proc in range(11):
+for proc in range(PROCESSES):
     p = mp.Process(target=draw_pixels, args=(pixel_queue,depth_queue))
     p.start()
     processes.append(p)
 
 #Initial load of pixel queue
-for pixel in random_pixels_to_draw:
-    x = int(pixel%width)
-    y = int(pixel/height)
-    pixel_queue.put((x,y))
+while len(random_pixels_to_draw):
+    pixel_group = []
+    for _ in range(GROUPINGS):
+        if len(random_pixels_to_draw):
+            pixel = random_pixels_to_draw.pop()
+            x = int(pixel%width)
+            y = int(pixel/height)
+            pixel_group.append((x,y,width,height,x_min,x_max,y_min,y_max,max_depth))
+    pixel_queue.put(pixel_group)
 
 while running:
     def reset_pixel_queue():
+        print("CLEARING PIXELS")
         clear_queue(pixel_queue)
-        for pixel in random_pixels_to_draw:
-            x = int(pixel%width)
-            y = int(pixel/height)
-            pixel_queue.put((x,y))
+
+        print("REGENERATING")
+        random_pixels_to_draw = random.sample(range(width*height+1),width*height)
+
+        print("CLEARING DEPTH")
+        clear_queue(depth_queue)
+        print("RELOADING")
+        while len(random_pixels_to_draw):
+            pixel_group = []
+            for _ in range(GROUPINGS):
+                if len(random_pixels_to_draw):
+                    pixel = random_pixels_to_draw.pop()
+                    x = int(pixel%width)
+                    y = int(pixel/height)
+                    pixel_group.append((x,y,width,height,x_min,x_max,y_min,y_max,max_depth))
+            pixel_queue.put(pixel_group)
+        print("DONE")
 
     for event in pygame.event.get():
         if event.type == pygame.QUIT:
             running = False
         if event.type == pygame.MOUSEBUTTONUP and event.button == MOUSELEFT:
-            print('L',pygame.mouse.get_pos())
+            print('LMOUSE',pygame.mouse.get_pos())
             #Center
             (x_pixel, y_pixel) = pygame.mouse.get_pos()
             x_center_new = x_min+x_pixel*((x_max-x_min)/float(width))
@@ -121,7 +146,7 @@ while running:
             y_max -= .2*y_length
             reset_pixel_queue()
         if event.type == pygame.MOUSEBUTTONUP and event.button == MOUSERIGHT:
-            print('R',pygame.mouse.get_pos())
+            print('RMOUSE',pygame.mouse.get_pos())
             #Center
             (x_pixel, y_pixel) = pygame.mouse.get_pos()
             x_center_new = x_min+x_pixel*((x_max-x_min)/float(width))
@@ -139,27 +164,31 @@ while running:
             y_max -= 1/.2*y_length
             reset_pixel_queue()
         if event.type == pygame.KEYDOWN and event.key == pygame.K_j:
+            print("J")
             max_depth = int(max_depth/2)
             if max_depth < 2:
                 max_depth = 2
             reset_pixel_queue()
         if event.type == pygame.KEYDOWN and event.key == pygame.K_k:
+            print("K")
             max_depth = int(max_depth*2)
             reset_pixel_queue()
 
     #If there is something in the depth queue, draw it
-    #Force a break every hundred pixels
-    counter = 0
-    while not depth_queue.empty() and counter < 100:
-        ((x,y),(r,g,b)) = depth_queue.get()
-        screen.set_at((x,y),(int(255 * r), int(255 * g), int(255 * b)))
-        counter += 1
+    #Force a break to redraw
+    time = datetime.now()
+    while not depth_queue.empty() and not (time - frame_start_time >= timedelta(microseconds=16666)):
+        depth_group = depth_queue.get()
+        for ((x,y),(r,g,b)) in depth_group:
+            screen.set_at((x,y),(int(255 * r), int(255 * g), int(255 * b)))
+        time = datetime.now()
 
     #Redraw at 60 fps
     time = datetime.now()
-    if time - frame_start_time >= timedelta(microseconds=2*16666):
+    if time - frame_start_time >= timedelta(microseconds=16666):
         pygame.display.flip()
-        if pixel_queue.empty():
-            sleep(.5)
         frame_start_time = time
+
+    if pixel_queue.empty() and depth_queue.empty():
+        sleep(.5)
 
