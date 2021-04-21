@@ -1,14 +1,14 @@
 from datetime import datetime, timedelta
 from time import sleep
 from queue import Empty
+
 import colorsys
 import math
 import multiprocessing as mp
-import pygame
 import random
 import threading
-import typing
-import sys
+
+import pygame
 
 MOUSELEFT = 1
 MOUSERIGHT = 3
@@ -16,163 +16,175 @@ MOUSERIGHT = 3
 PROCESSES = 11
 GROUPINGS = 20
 
-def calculate_depth(c: complex, max_depth: int) -> int:
-    z = complex(0,0)
-    for i in range(0,max_depth):
-        z = z**2 + c
-        if abs(z) > 2:
-            return i
-    return max_depth
+SCREEN_WIDTH:int = 1000
+SCREEN_HEIGHT:int = 1000
 
-class mandelbrotThread(threading.Thread):
-    def __init(self):
+INITIAL_X_MIN = -1.5
+INITIAL_X_MAX = 1.5
+INITIAL_Y_MIN = -1.5
+INITIAL_Y_MAX = 1.5
+INITIAL_MAX_DEPTH:int = 8
+
+class MandelbrotThread(threading.Thread):
+    def __init__(self, depth_queue):
         threading.Thread.__init__(self)
 
-    def run(self):
-        print("Test")
-        sleep(.5)
-        print("Done")
+        self.x_min     = INITIAL_X_MIN
+        self.x_max     = INITIAL_X_MAX
+        self.y_min     = INITIAL_Y_MIN
+        self.y_max     = INITIAL_Y_MAX
+        self.max_depth = INITIAL_MAX_DEPTH
 
+        self.pixel_queue = mp.Queue()
+        self.depth_queue = depth_queue
 
-background_colour = (0,0,0)
-width:int = 1000
-height:int = 1000
-x_min = -1
-x_max = 1
-y_min = -1
-y_max = 1
-max_depth:int = 8
+        self.generate_pixel_queue()
 
-screen = pygame.display.set_mode((width,height))
-pygame.display.set_caption('Mandelbrot')
-screen.fill(background_colour)
+        #Set up processes
+        self.processes = []
+        for proc in range(PROCESSES):
+            p = mp.Process(target=draw_pixels, args=(self.pixel_queue,self.depth_queue))
+            p.start()
+            self.processes.append(p)
 
-def draw_pixels(pixel_queue, depth_queue):
-    while True:
-        pixel_group = pixel_queue.get()
-        depth_group = []
-        for (x,y,width,height,x_min,x_max,y_min,y_max,max_depth) in pixel_group:
-            depth_group.append(draw_pixel(x,y,width,height,x_min,x_max,y_min,y_max,max_depth))
-        depth_queue.put(depth_group)
-
-def draw_pixel(x,y,width,height,x_min,x_max,y_min,y_max,max_depth):
-
-    x_val = float(x)/(width)*(x_max-x_min)+x_min
-    y_val = float(y)/(height)*(y_max-y_min)+y_min
-    depth = calculate_depth(complex(x_val,y_val),max_depth)
-
-    #Generate rainbow in hsv, then convert to rgb
-    #Use 5/6 of spectrum to prevent overlapping back to red, stop at purple
-    hsv = math.log((float(depth)/max_depth)*9+1)*5/6
-    (r,g,b) = colorsys.hsv_to_rgb(hsv, 1.0, 1.0)
-
-    return ((x,y),(r,g,b))
-
-running = True
-frame_start_time = datetime.now()
-random_pixels_to_draw = random.sample(range(width*height+1),width*height)
-
-
-#Queues for drawing processes
-pixel_queue = mp.Queue()
-depth_queue = mp.Queue()
-
-def clear_queue(q):
-    try:
-        while True:
-            q.get_nowait()
-    except Empty:
+    def zoom(self, x_pixel, y_pixel, percent):
+        x_center_new = self.x_min+x_pixel*((self.x_max-self.x_min)/float(SCREEN_WIDTH))
+        y_center_new = self.y_min+y_pixel*((self.y_max-self.y_min)/float(SCREEN_HEIGHT))
+        x_length = (self.x_max-self.x_min)
+        y_length = (self.y_max-self.y_min)
+        self.x_min = x_center_new-x_length/2
+        self.x_max = x_center_new+x_length/2
+        self.y_min = y_center_new-y_length/2
+        self.y_max = y_center_new+y_length/2
+        #Scale
+        self.x_min += percent*x_length
+        self.x_max -= percent*x_length
+        self.y_min += percent*y_length
+        self.y_max -= percent*y_length
+    
+    def center(self, x_pixel, y_pixel):
         pass
 
-#Set up drawing processes
-processes = []
-for proc in range(PROCESSES):
-    p = mp.Process(target=draw_pixels, args=(pixel_queue,depth_queue))
-    p.start()
-    processes.append(p)
+    def depth(self, val):
+        self.max_depth *= val
+        if self.max_depth < 2:
+            self.max_depth = 2
 
-#Initial load of pixel queue
-while len(random_pixels_to_draw):
-    pixel_group = []
-    for _ in range(GROUPINGS):
-        if len(random_pixels_to_draw):
-            pixel = random_pixels_to_draw.pop()
-            x = int(pixel%width)
-            y = int(pixel/height)
-            pixel_group.append((x,y,width,height,x_min,x_max,y_min,y_max,max_depth))
-    pixel_queue.put(pixel_group)
-
-while running:
-    def reset_pixel_queue():
-        print("CLEARING PIXELS")
-        clear_queue(pixel_queue)
-
-        print("REGENERATING")
-        random_pixels_to_draw = random.sample(range(width*height+1),width*height)
-
-        print("CLEARING DEPTH")
-        clear_queue(depth_queue)
-        print("RELOADING")
+    def generate_pixel_queue(self):
+        random_pixels_to_draw = random.sample(range(SCREEN_WIDTH*SCREEN_HEIGHT+1),SCREEN_WIDTH*SCREEN_HEIGHT)
         while len(random_pixels_to_draw):
             pixel_group = []
             for _ in range(GROUPINGS):
                 if len(random_pixels_to_draw):
                     pixel = random_pixels_to_draw.pop()
-                    x = int(pixel%width)
-                    y = int(pixel/height)
-                    pixel_group.append((x,y,width,height,x_min,x_max,y_min,y_max,max_depth))
-            pixel_queue.put(pixel_group)
-        print("DONE")
+                    x = int(pixel%SCREEN_WIDTH)
+                    y = int(pixel/SCREEN_HEIGHT)
+                    x_val = float(x)/(SCREEN_WIDTH)*(self.x_max-self.x_min)+self.x_min
+                    y_val = float(y)/(SCREEN_HEIGHT)*(self.y_max-self.y_min)+self.y_min
+                    pixel_group.append((x,y,x_val,y_val,self.max_depth))
+            self.pixel_queue.put(pixel_group)
 
-    for event in pygame.event.get():
-        if event.type == pygame.QUIT:
-            running = False
-        if event.type == pygame.MOUSEBUTTONUP and event.button == MOUSELEFT:
-            print('LMOUSE',pygame.mouse.get_pos())
-            #Center
-            (x_pixel, y_pixel) = pygame.mouse.get_pos()
-            x_center_new = x_min+x_pixel*((x_max-x_min)/float(width))
-            y_center_new = y_min+y_pixel*((y_max-y_min)/float(height))
-            x_length = (x_max-x_min)
-            y_length = (y_max-y_min)
-            x_min = x_center_new-x_length/2
-            x_max = x_center_new+x_length/2
-            y_min = y_center_new-y_length/2
-            y_max = y_center_new+y_length/2
-            #Scale
-            x_min += .2*x_length
-            x_max -= .2*x_length
-            y_min += .2*y_length
-            y_max -= .2*y_length
-            reset_pixel_queue()
-        if event.type == pygame.MOUSEBUTTONUP and event.button == MOUSERIGHT:
-            print('RMOUSE',pygame.mouse.get_pos())
-            #Center
-            (x_pixel, y_pixel) = pygame.mouse.get_pos()
-            x_center_new = x_min+x_pixel*((x_max-x_min)/float(width))
-            y_center_new = y_min+y_pixel*((y_max-y_min)/float(height))
-            x_length = (x_max-x_min)
-            y_length = (y_max-y_min)
-            x_min = x_center_new-x_length/2
-            x_max = x_center_new+x_length/2
-            y_min = y_center_new-y_length/2
-            y_max = y_center_new+y_length/2
-            #Scale
-            x_min += 1/.2*x_length
-            x_max -= 1/.2*x_length
-            y_min += 1/.2*y_length
-            y_max -= 1/.2*y_length
-            reset_pixel_queue()
-        if event.type == pygame.KEYDOWN and event.key == pygame.K_j:
-            print("J")
-            max_depth = int(max_depth/2)
-            if max_depth < 2:
-                max_depth = 2
-            reset_pixel_queue()
-        if event.type == pygame.KEYDOWN and event.key == pygame.K_k:
-            print("K")
-            max_depth = int(max_depth*2)
-            reset_pixel_queue()
+    def clear_pixel_queue(self):
+        try:
+            while True:
+                self.pixel_queue.get_nowait()
+        except Empty:
+            pass
+
+    def reset_pixel_queue(self):
+        self.clear_pixel_queue()
+        self.generate_pixel_queue()
+
+    def draw_pixels(pixel_queue, depth_queue):
+        while True:
+            pixel_group = pixel_queue.get()
+            depth_group = []
+            for (x,y,x_val,y_val,max_depth) in pixel_group:
+                depth_group.append(((x,y),draw_pixel(x_val,y_val,max_depth)))
+            depth_queue.put(depth_group)
+
+    def draw_pixel(x_val,y_val,max_depth):
+
+        depth = calculate_depth(complex(x_val,y_val),max_depth)
+
+        #Generate rainbow in hsv, then convert to rgb
+        #Use 5/6 of spectrum to prevent overlapping back to red, stop at purple
+        hsv = math.log((float(depth)/max_depth)*9+1)*5/6
+        (r,g,b) = colorsys.hsv_to_rgb(hsv, 1.0, 1.0)
+
+        return (r,g,b)
+
+    def calculate_depth(c: complex, max_depth: int) -> int:
+        z = complex(0,0)
+        for i in range(0,max_depth):
+            z = z**2 + c
+            if abs(z) > 2:
+                return i
+        return max_depth
+
+    def run(self):
+        #monitor values, regenerate pixel_queue if change detected
+        x_min     = 0
+        x_max     = 0
+        y_min     = 0
+        y_max     = 0
+        max_depth = 0
+        while True:
+            if (x_min     != self.x_min     or
+                x_max     != self.x_max     or
+                y_min     != self.y_min     or
+                y_max     != self.y_max     or
+                max_depth != self.max_depth):
+
+                print("RESET")
+                x_min     = self.x_min    
+                x_max     = self.x_max    
+                y_min     = self.y_min    
+                y_max     = self.y_max    
+                max_depth = self.max_depth
+
+                self.reset_pixel_queue()
+
+            sleep(.5)
+
+
+screen = pygame.display.set_mode((SCREEN_WIDTH,SCREEN_HEIGHT))
+pygame.display.set_caption('Mandelbrot')
+screen.fill((0,0,0))
+
+
+#Queue for drawing depths
+depth_queue = mp.Queue()
+
+mandelbrot_thread = MandelbrotThread(depth_queue)
+mandelbrot_thread.start()
+
+running = True
+frame_start_time = datetime.now()
+while running:
+    #Redraw/check events at 60 fps
+    time = datetime.now()
+    if time - frame_start_time >= timedelta(microseconds=16666):
+        pygame.display.flip()
+        frame_start_time = time
+
+        for event in pygame.event.get():
+            if event.type == pygame.QUIT:
+                running = False
+            if event.type == pygame.MOUSEBUTTONUP and event.button == MOUSELEFT:
+                print('LMOUSE',pygame.mouse.get_pos())
+                (x_pixel, y_pixel) = pygame.mouse.get_pos()
+                mandelbrot_thread.zoom(x_pixel, y_pixel,.2)
+            if event.type == pygame.MOUSEBUTTONUP and event.button == MOUSERIGHT:
+                print('RMOUSE',pygame.mouse.get_pos())
+                (x_pixel, y_pixel) = pygame.mouse.get_pos()
+                mandelbrot_thread.zoom(x_pixel, y_pixel,1/.2)
+            if event.type == pygame.KEYDOWN and event.key == pygame.K_j:
+                print("J")
+                mandelbrot_thread.depth(.5)
+            if event.type == pygame.KEYDOWN and event.key == pygame.K_k:
+                print("K")
+                mandelbrot_thread.depth(2)
 
     #If there is something in the depth queue, draw it
     #Force a break to redraw
@@ -183,12 +195,4 @@ while running:
             screen.set_at((x,y),(int(255 * r), int(255 * g), int(255 * b)))
         time = datetime.now()
 
-    #Redraw at 60 fps
-    time = datetime.now()
-    if time - frame_start_time >= timedelta(microseconds=16666):
-        pygame.display.flip()
-        frame_start_time = time
-
-    if pixel_queue.empty() and depth_queue.empty():
-        sleep(.5)
 
