@@ -6,13 +6,10 @@ with the ability to zoom
 
 """
 
-from dataclasses import dataclass
 from datetime import datetime, timedelta
-from queue import Empty
 from typing import List, Tuple
+from time import sleep
 
-import colorsys
-import math
 import multiprocessing as mp
 import random
 import sys
@@ -20,28 +17,10 @@ import threading
 
 import pygame
 
+from .pixel             import Pixel            
+from .color             import Color            
+from .mandelbrot_thread  import MandelbrotThread 
 
-@dataclass
-class Pixel:
-    """ Pixel class """
-
-    x: int
-    y: int
-
-    def __call__(self) -> Tuple[int, int]:
-        return (self.x, self.y)
-
-
-@dataclass
-class Color:
-    """ Color class """
-
-    r: float
-    g: float
-    b: float
-
-    def __call__(self) -> Tuple[float, float, float]:
-        return (self.r, self.g, self.b)
 
 
 MOUSELEFT = 1
@@ -60,170 +39,6 @@ INITIAL_Y_MAX = 1.5
 INITIAL_MAX_DEPTH = 128
 
 
-class MandelbrotProcess(mp.Process):
-    """ Process with generates depth values at certain coordinates in a loop """
-
-    def __init__(
-        self,
-        pixel_queue: "mp.Queue[List[Tuple[Pixel, float, float, int]]]",
-        depth_queue: "mp.Queue[List[Tuple[Pixel,Color]]]",
-        exit_event: mp.Event,  # type: ignore
-    ) -> None:
-        mp.Process.__init__(self)
-        self.pixel_queue = pixel_queue
-        self.depth_queue = depth_queue
-        self.exit_event = exit_event
-
-    def run(self) -> None:
-
-        while not self.exit_event.is_set():  # type: ignore
-            try:
-                pixel_group = self.pixel_queue.get(timeout=0.1)
-                depth_group: List[Tuple[Pixel, Color]] = []
-                for (pixel, x_val, y_val, max_depth) in pixel_group:
-                    depth_group.append(
-                        (pixel, self.draw_pixel(x_val, y_val, max_depth))
-                    )
-                self.depth_queue.put(depth_group)
-            except Empty:
-                pass
-        print("Process done")
-
-    def draw_pixel(self, x_val: float, y_val: float, max_depth: int) -> Color:
-        """ Take pixel, calculate deth up to max depth, and output rgb value """
-
-        depth = self.calculate_depth(complex(x_val, y_val), max_depth)
-
-        # Generate rainbow in hsv, then convert to rgb
-        # Use 5/6 of spectrum to prevent overlapping back to red, stop at purple
-        hsv = math.log((float(depth) / max_depth) * 9 + 1) * 5 / 6
-        return Color(*colorsys.hsv_to_rgb(hsv, 1.0, 1.0))
-
-    def calculate_depth(self, c: complex, max_depth: int) -> int:
-        """ Run mandelbrot calculation up to max_depth """
-
-        z = complex(0, 0)
-        for i in range(0, max_depth):
-            z = z ** 2 + c
-            if abs(z) > 2:
-                return i
-        return max_depth
-
-
-class MandelbrotThread(threading.Thread):
-    """ Thread for handling mandelbrot processes and maintaining state """
-
-    def __init__(
-        self,
-        pending_queue: "mp.Queue[List[Pixel]]",
-        depth_queue: "mp.Queue[List[Tuple[Pixel,Color]]]",
-        exit_event: threading.Event,
-    ) -> None:
-        threading.Thread.__init__(self)
-
-        self.x_min: float = INITIAL_X_MIN
-        self.x_max: float = INITIAL_X_MAX
-        self.y_min: float = INITIAL_Y_MIN
-        self.y_max: float = INITIAL_Y_MAX
-        self.max_depth: int = INITIAL_MAX_DEPTH
-
-        self.pending_queue = pending_queue
-        self.pixel_queue: "mp.Queue[List[Tuple[Pixel, float, float, int]]]" = mp.Queue(
-            PROCESSES * 40
-        )
-        self.depth_queue = depth_queue
-
-        self.exit_event = exit_event
-
-        self.random_pixels_to_draw = random.sample(
-            range(SCREEN_WIDTH * SCREEN_HEIGHT + 1), SCREEN_WIDTH * SCREEN_HEIGHT
-        )
-
-        # self.generate_pixel_queue()
-
-        # Set up processes
-        self.process_exit_event = mp.Event()
-        self.processes = []
-        for _ in range(PROCESSES):
-            p = MandelbrotProcess(
-                self.pixel_queue, self.depth_queue, self.process_exit_event
-            )
-            p.start()
-            self.processes.append(p)
-
-    def center(self, x_pixel: int, y_pixel: int) -> None:
-        """ Center the image to a coordinate """
-
-        x_center_new = self.x_min + x_pixel * (
-            (self.x_max - self.x_min) / float(SCREEN_WIDTH)
-        )
-        y_center_new = self.y_min + y_pixel * (
-            (self.y_max - self.y_min) / float(SCREEN_HEIGHT)
-        )
-        x_length = self.x_max - self.x_min
-        y_length = self.y_max - self.y_min
-        self.x_min = x_center_new - x_length / 2
-        self.x_max = x_center_new + x_length / 2
-        self.y_min = y_center_new - y_length / 2
-        self.y_max = y_center_new + y_length / 2
-        print(
-            f"Centered to: ({(self.x_max+self.x_min)/2:.2e},{-(self.y_max+self.y_min)/2:.2e})"
-        )
-
-    def zoom(self, percent: float) -> None:
-        """ Zoom in or out """
-
-        x_length = self.x_max - self.x_min
-        y_length = self.y_max - self.y_min
-        self.x_min += percent * x_length
-        self.x_max -= percent * x_length
-        self.y_min += percent * y_length
-        self.y_max -= percent * y_length
-        print(
-            f"Zoomed to: (({self.x_min:.2e},{self.x_max:.2e}),({self.y_min:.2e},{self.y_max:.2e}))"
-        )
-
-    def center_and_zoom(self, x_pixel: int, y_pixel: int, percent: float) -> None:
-        """ center and then zoom """
-
-        self.center(x_pixel, y_pixel)
-        self.zoom(percent)
-
-    def depth(self, val: float) -> None:
-        """ Change the max_depth by multiplying current value by val """
-
-        self.max_depth = int(self.max_depth * val)
-        if self.max_depth < 2:
-            self.max_depth = 2
-        print(f"Depth changed to: {self.max_depth}")
-
-    def run(self) -> None:
-
-        while not self.exit_event.is_set():
-
-            try:
-                while True:
-                    pending_group = self.pending_queue.get_nowait()
-                    pixel_group: List[Tuple[Pixel, float, float, int]] = []
-                    for pixel in pending_group:
-                        x_val = (
-                            float(pixel.x) / (SCREEN_WIDTH) * (self.x_max - self.x_min)
-                            + self.x_min
-                        )
-                        y_val = (
-                            float(pixel.y) / (SCREEN_HEIGHT) * (self.y_max - self.y_min)
-                            + self.y_min
-                        )
-                        pixel_group.append((pixel, x_val, y_val, self.max_depth))
-                    self.pixel_queue.put(pixel_group)
-            except Empty:
-                pass
-
-        self.process_exit_event.set()
-        for p in self.processes:
-            p.terminate()
-
-        print("Thread done")
 
 
 def load_pending_queue(pending_queue: "mp.Queue[List[Pixel]]") -> None:
@@ -256,6 +71,13 @@ def main() -> None:
     # Thread for handling processes
     mandelbrot_thread_exit = threading.Event()
     mandelbrot_thread = MandelbrotThread(
+        SCREEN_WIDTH,
+        SCREEN_HEIGHT,
+        INITIAL_X_MIN,
+        INITIAL_X_MAX,
+        INITIAL_Y_MIN,
+        INITIAL_Y_MAX,
+        INITIAL_MAX_DEPTH,
         pending_queue, depth_queue, mandelbrot_thread_exit
     )
     mandelbrot_thread.start()
@@ -306,7 +128,20 @@ def main() -> None:
             pending_queue.put(pending_group)
             time = datetime.now()
 
+    pending_queue.close()
+    depth_queue.cancel_join_thread()
+    print("pending queue closed")
+    depth_queue.close()
+    pending_queue.cancel_join_thread()
+    print("depth queue closed")
     mandelbrot_thread_exit.set()
+    print("thread sent exit")
+    #sleep(1)
+
+    print("Waiting for thread to join")
+    while mandelbrot_thread.is_alive():
+        print("thread alive")
+        sleep(1)
     mandelbrot_thread.join()
     pygame.display.quit()
     pygame.quit()
